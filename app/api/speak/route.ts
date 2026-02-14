@@ -8,7 +8,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No text provided" }, { status: 400 });
     }
 
-    const VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // default voice
+    const VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; 
 
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
       method: "POST",

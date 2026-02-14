@@ -5,8 +5,6 @@ type TutorResult = {
   verdict?: "correct" | "partial" | "incorrect";
   interrupt?: boolean;
   feedback?: string;
-  question?: string;
-  raw?: string;
 };
 
 export default function Home() {
@@ -25,10 +23,12 @@ export default function Home() {
   const shouldAutoRestartRef = useRef(true);
   const tutorSpeakingRef = useRef(false);
 
-  const CHECK_EVERY_MS = 4000;          // how often to evaluate while speaking
-  const MIN_NEW_CHARS = 35;             // only check if we have this many new characters
-  const MAX_CHECKS_PER_SESSION = 6;     // prevents burning quota during a single speaking session
-  const COOLDOWN_AFTER_INTERRUPT_MS = 9000; // wait after interrupt before checking again
+  const CHECK_EVERY_MS = 2000;          
+  const MIN_NEW_CHARS = 20;            
+  const MAX_CHECKS_PER_SESSION = 6;    
+  const COOLDOWN_AFTER_INTERRUPT_MS = 9000; 
+  const AUTO_RESTART_DELAY_MS = 1200;   
+  const RESULT_HOLD_MS = 4500;         
 
   const recognitionRef = useRef<any>(null);
   const intervalRef = useRef<number | null>(null);
@@ -37,8 +37,9 @@ export default function Home() {
   const lastCheckedLenRef = useRef<number>(0);
   const checksUsedRef = useRef<number>(0);
   const cooldownUntilRef = useRef<number>(0);
+  const micCooldownUntilRef = useRef<number>(0);
+  const resultHoldUntilRef = useRef<number>(0);
   const inFlightRef = useRef<boolean>(false);
-  const autoRestartRef = useRef(true);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const resetForRetry = () => {
@@ -48,17 +49,15 @@ export default function Home() {
     cooldownUntilRef.current = 0;
   };
   const speakTutor = async (text: string) => {
-    // ✅ make sure mic is OFF while tutor speaks
     shouldAutoRestartRef.current = false;
     stopListening();
 
-    // stop any previous audio
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
 
-    tutorSpeakingRef.current = true;   // ✅ block restarts while speaking
+    tutorSpeakingRef.current = true;  
     setAvatarSpeaking(true);
 
     const res = await fetch("/api/speak", {
@@ -82,14 +81,19 @@ export default function Home() {
       audioRef.current = audio;
 
       const done = () => {
-        tutorSpeakingRef.current = false; // ✅ tutor finished
+        tutorSpeakingRef.current = false; 
         setAvatarSpeaking(false);
         URL.revokeObjectURL(url);
+        micCooldownUntilRef.current = Date.now() + AUTO_RESTART_DELAY_MS;
 
-        // ✅ now it’s safe to restart the mic (if liveMode)
         if (liveMode) {
           shouldAutoRestartRef.current = true;
-          setTimeout(() => startListening(), 250);
+          setTimeout(() => {
+            if (!shouldAutoRestartRef.current) return;
+            if (tutorSpeakingRef.current) return;
+            if (Date.now() < micCooldownUntilRef.current) return;
+            startListening();
+          }, AUTO_RESTART_DELAY_MS);
         }
 
         resolve();
@@ -102,9 +106,6 @@ export default function Home() {
     });
   };
 
-
-
-  // ---------- Speech Recognition ----------
   const startListening = () => {
     shouldAutoRestartRef.current = true;
     const SpeechRecognition =
@@ -114,20 +115,18 @@ export default function Home() {
       alert("Speech recognition not supported in this browser. Try Chrome on desktop.");
       return;
     }
-
-    // If already listening, don't start a second instance
+    
     if (recognitionRef.current) return;
 
     const recognition = new SpeechRecognition();
     recognitionRef.current = recognition;
 
     recognition.lang = "en-US";
-    recognition.continuous = true;     // try to keep going through pauses
-    recognition.interimResults = true; // get partial text while speaking
+    recognition.continuous = true;     
+    recognition.interimResults = true; 
 
     recognition.onstart = () => {
       setListening(true);
-      // reset counters for a new session
       lastCheckedLenRef.current = transcript.length;
       checksUsedRef.current = 0;
       cooldownUntilRef.current = 0;
@@ -135,7 +134,6 @@ export default function Home() {
     };
 
     recognition.onresult = (event: any) => {
-      // Collect final + interim parts
       if (tutorSpeakingRef.current) return;
       let finalText = "";
       let interimText = "";
@@ -146,9 +144,7 @@ export default function Home() {
         else interimText += chunk;
       }
 
-      // Keep final text appended. Show interim in a "live" way.
       setTranscript((prev) => {
-        // remove any previous interim marker
         const base = prev.replace(/\s*\[speaking\][\s\S]*$/, "").trim();
         const appended = (base ? base + " " : "") + finalText.trim();
         const withFinal = appended.trim();
@@ -163,12 +159,20 @@ export default function Home() {
       setListening(false);
 
       if (!liveMode) return;
-      if (!shouldAutoRestartRef.current) return;     // ✅ intentional stop
-      if (tutorSpeakingRef.current) return;          // ✅ tutor is talking
-
-      setTimeout(() => { checkWithAI(true); }, 200);
+      if (!shouldAutoRestartRef.current) return;    
+      if (tutorSpeakingRef.current) return;         
 
       setTimeout(() => {
+        if (!shouldAutoRestartRef.current) return;
+        if (tutorSpeakingRef.current) return;
+        if (Date.now() < micCooldownUntilRef.current) return;
+        checkWithAI(true);
+      }, 200);
+
+      setTimeout(() => {
+        if (!shouldAutoRestartRef.current) return;
+        if (tutorSpeakingRef.current) return;
+        if (Date.now() < micCooldownUntilRef.current) return;
         if (!recognitionRef.current) startListening();
       }, 600);
     };
@@ -185,7 +189,7 @@ export default function Home() {
   };
 
   const stopListening = () => {
-    shouldAutoRestartRef.current = false; // ✅ do not auto-restart from onend
+    shouldAutoRestartRef.current = false; 
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch {}
       recognitionRef.current = null;
@@ -194,7 +198,7 @@ export default function Home() {
   };
 
 
-  // ---------- AI check (call your route) ----------
+
   const checkWithAI = async (force = false) => {
     if (inFlightRef.current) return;
 
@@ -203,48 +207,36 @@ export default function Home() {
         verdict: "partial",
         interrupt: false,
         feedback: "Paste your lecture notes first.",
-        question: "What topic are we covering today?",
       });
       return;
     }
 
     if (!transcript.trim()) {
+      if (Date.now() < resultHoldUntilRef.current) return;
       setResult({
         verdict: "partial",
         interrupt: false,
         feedback: "Say something (or type it) so I can check it.",
-        question: "Try explaining the concept in one sentence.",
       });
       return;
     }
-
-    // Respect cooldown after an interrupt
+   
     const now = Date.now();
     if (now < cooldownUntilRef.current) return;
 
-    // Don't burn quota
     if (checksUsedRef.current >= MAX_CHECKS_PER_SESSION) return;
 
-    // Only check when there is enough new speech since last check
     const cleanTranscript = transcript.replace(/\s*\[speaking\][\s\S]*$/, "").trim();
     const newLen = cleanTranscript.length;
     const delta = newLen - lastCheckedLenRef.current;
 
     if (!force && delta < MIN_NEW_CHARS) return;
 
-    // // Optional: only check at sentence boundaries (reduces spam)
-    // const lastChar = cleanTranscript.slice(-1);
-    // const looksLikeBoundary = [".", "?", "!"].includes(lastChar);
-    // if (!force && !looksLikeBoundary && delta < MIN_NEW_CHARS * 2) {
-    //   // If no punctuation, require more new text
-    //   return;
-    // }
-
     inFlightRef.current = true;
     setChecking(true);
 
     try {
-      // send only the most recent chunk (last ~250 chars) for "live" checking
+
       const recentSnippet = cleanTranscript.slice(Math.max(0, newLen - 250));
 
       const res = await fetch("/api/test-ai", {
@@ -259,15 +251,14 @@ export default function Home() {
 
       const data: TutorResult = await res.json();
 
-      // update counters
+
       lastCheckedLenRef.current = newLen;
       checksUsedRef.current += 1;
 
       setResult(data);
-      lastCheckedLenRef.current = newLen;
-      checksUsedRef.current += 1;
       if (data?.verdict === "correct" || data?.verdict === "partial") {
-        resetForRetry();       // clears transcript + counters
+        resultHoldUntilRef.current = Date.now() + RESULT_HOLD_MS;
+        resetForRetry();       
         return;
 }
 
@@ -284,21 +275,28 @@ export default function Home() {
 
           if (voiceOn && voiceCountRef.current < MAX_VOICES_PER_SESSION) {
             voiceCountRef.current += 1;
-            await speakTutor(toSay); // ✅ restarts mic after speaking ends
+            await speakTutor(toSay); 
+          } else if (liveMode) {
+            shouldAutoRestartRef.current = true;
+            setTimeout(() => {
+              if (!shouldAutoRestartRef.current) return;
+              if (tutorSpeakingRef.current) return;
+              if (Date.now() < micCooldownUntilRef.current) return;
+              startListening();
+            }, AUTO_RESTART_DELAY_MS);
           }
-
-          resetForRetry();
         }
+
+        resetForRetry();
       }
 
 
     } catch (e) {
-      // If anything goes wrong, don't crash UX
+      
       setResult({
         verdict: "partial",
         interrupt: false,
         feedback: "Give me a second — try again in a moment.",
-        question: "What are two key facts from the notes that support your answer?",
       });
     } finally {
       inFlightRef.current = false;
@@ -306,7 +304,6 @@ export default function Home() {
     }
   };
 
-  // ---------- Auto-check timer while listening ----------
   useEffect(() => {
     if (!listening || !liveMode) {
       if (intervalRef.current) {
@@ -330,17 +327,16 @@ export default function Home() {
     };
   }, [listening, notes, transcript]);
 
-  // Presentational: bubble shows tutor feedback when available
+
   const bubbleText = result?.feedback ?? "";
 
-  // ui
+
   const prepareNotes = async () => {
     if (!notes.trim()) {
       setResult({
         verdict: "partial",
         interrupt: false,
         feedback: "Paste lecture notes first, then click Prepare Notes.",
-        question: "What topic are we covering?",
       });
       return;
     }
@@ -358,14 +354,12 @@ export default function Home() {
         verdict: "partial",
         interrupt: false,
         feedback: "✅ Notes prepared! Now live checks will be faster + cheaper.",
-        question: "Start speaking when ready.",
       });
     } catch (e) {
       setResult({
         verdict: "partial",
         interrupt: false,
         feedback: "Could not prepare notes. You can still use raw notes, but it may be slower.",
-        question: "Try again, or keep going without Prepare Notes.",
       });
     } finally {
       setPreparing(false);
@@ -373,49 +367,46 @@ export default function Home() {
   };
 
   return (
-    <main className="min-h-screen min-w-0 relative overflow-hidden bg-gradient-to-br from-[#fff2f2] via-[#ffe6de] to-[#fff3e8] p-6 md:p-10">
-      {/* Decorative warm blobs */}
+    <main className="min-h-screen min-w-0 relative overflow-hidden bg-linear-to-br from-[#fff2f2] via-[#ffe6de] to-[#fff3e8] p-6 md:p-10">
+
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -left-20 top-1/4 w-72 h-72 rounded-full bg-red-300/30 blur-3xl" />
         <div className="absolute right-0 top-1/2 w-64 h-64 rounded-full bg-red-400/25 blur-3xl" />
         <div className="absolute bottom-0 left-1/3 w-56 h-56 rounded-full bg-orange-300/30 blur-3xl" />
       </div>
 
-      <div className="relative grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-8 md:gap-12 items-center max-w-6xl mx-auto">
-        {/* LEFT: Avatar section (40–50% on desktop) */}
-        <div className="flex flex-col items-center justify-center md:min-h-[420px] order-1">
+      <div className="relative grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)] gap-8 md:gap-12 items-start max-w-6xl mx-auto">
+       
+        <div className="flex flex-col items-center justify-start md:pt-32 md:min-h-105 order-1">
           <div className="relative flex justify-center items-center">
-            {/* Pastel glow ring behind avatar */}
+            
             <div
-              className={`absolute inset-0 rounded-full w-[280px] h-[280px] md:w-[320px] md:h-[320px] m-auto bg-gradient-to-br from-yellow-200/60 to-amber-300/60 blur-2xl transition-all duration-300 ${
+              className={`absolute inset-0 rounded-full w-70 h-70 md:w-[320px] md:h-80 m-auto bg-linear-to-br from-yellow-200/60 to-amber-300/60 blur-2xl transition-all duration-300 ${
                 avatarSpeaking ? "scale-110 opacity-80" : "scale-100 opacity-60"
               }`}
             />
             <img
               src="/avatar.png"
               alt="Tutor avatar"
-              className={`relative w-[280px] md:w-[340px] max-w-full transition-all duration-300 ease-out ${
+              className={`relative w-70 md:w-85 max-w-full transition-all duration-300 ease-out ${
                 avatarSpeaking ? "scale-[1.04]" : "scale-100"
               }`}
             />
           </div>
 
-          {/* Speech bubble when bubbleText exists */}
           {bubbleText ? (
             <div className="relative mt-6 w-full max-w-sm mx-auto">
               <div className="rounded-3xl bg-white/80 backdrop-blur-md border border-white/50 shadow-lg shadow-black/5 px-5 py-4 text-gray-800 text-sm md:text-base">
                 {bubbleText}
               </div>
-              {/* Bubble tail pointing toward avatar */}
               <div
-                className="absolute -top-2 left-1/2 -translate-x-1/2 w-0 h-0 border-l-[10px] border-l-transparent border-r-[10px] border-r-transparent border-b-[12px] border-b-white/80"
+                className="absolute -top-2 left-1/2 -translate-x-1/2 w-0 h-0 border-l-10 border-l-transparent border-r-10 border-r-transparent border-b-12 border-b-white/80"
                 aria-hidden
               />
               <span className="absolute -top-1 -right-1 text-sm opacity-70" aria-hidden>✨</span>
             </div>
           ) : null}
 
-          {/* Status chips */}
           <div className="flex flex-wrap justify-center gap-2 mt-6">
             {listening && (
               <span className="inline-flex items-center gap-1.5 rounded-full border border-red-200/80 bg-red-100/90 px-3 py-1.5 text-sm text-red-800 shadow-sm">
@@ -433,42 +424,54 @@ export default function Home() {
               </span>
             )}
           </div>
-        </div>
 
-        {/* RIGHT: Notes, transcript, controls (50–60% on desktop) */}
-        <div className="flex flex-col gap-6 order-2">
-          <h1 className="text-3xl md:text-4xl font-bold text-gray-800 tracking-tight">
-            AI Speaking Tutor
-          </h1>
+          {/* Tutor Controls */}
+          <div className="rounded-2xl bg-linear-to-r from-red-50/60 to-orange-50/60 backdrop-blur-sm border border-red-100/50 shadow-md shadow-black/5 p-4 w-full max-w-sm mx-auto">
+            <p className="text-sm text-gray-700 mb-4 text-center font-semibold">⚙️ Optional settings</p>
+            <div className="space-y-3">
+              <div>
+                <button
+                  onClick={() => setVoiceOn((v) => !v)}
+                  className={`w-full rounded-full px-5 py-2.5 font-semibold transition-all duration-200 shadow-md shadow-black/5 border ${
+                    voiceOn
+                      ? "bg-red-500/90 text-white border-red-600/80"
+                      : "bg-red-400/80 text-white border-red-500/60 hover:brightness-110"
+                  }`}
+                >
+                  Tutor Voice: {voiceOn ? "ON" : "OFF"}
+                </button>
+                <p className="text-sm text-gray-700 mt-2 font-semibold">Hear the AI give you spoken feedback</p>
+              </div>
 
-          {/* Tutor Controls (top section) */}
-          <div className="rounded-2xl bg-gradient-to-r from-red-50/60 to-orange-50/60 backdrop-blur-sm border border-red-100/50 shadow-md shadow-black/5 p-4">
-            <div className="flex flex-wrap gap-3 justify-center">
-              <button
-                onClick={() => setVoiceOn((v) => !v)}
-                className={`rounded-full px-5 py-2.5 font-semibold transition-all duration-200 shadow-md shadow-black/5 border ${
-                  voiceOn
-                    ? "bg-red-500/90 text-white border-red-600/80 scale-105"
-                    : "bg-red-400/80 text-white border-red-500/60 hover:brightness-110"
-                }`}
-              >
-                <span aria-hidden>🔊</span> Tutor Voice: {voiceOn ? "ON" : "OFF"}
-              </button>
-
-              <button
-                onClick={() => setLiveMode((v) => !v)}
-                className={`rounded-full px-5 py-2.5 font-semibold transition-all duration-200 shadow-md shadow-black/5 border ${
-                  liveMode
-                    ? "bg-orange-500/90 text-white border-orange-600/80 scale-105"
-                    : "bg-orange-400/80 text-white border-orange-500/60 hover:brightness-110"
-                }`}
-              >
-                <span aria-hidden>⚡</span> Live Interrupt: {liveMode ? "ON" : "OFF"}
-              </button>
+              <div>
+                <button
+                  onClick={() => setLiveMode((v) => !v)}
+                  className={`w-full rounded-full px-5 py-2.5 font-semibold transition-all duration-200 shadow-md shadow-black/5 border ${
+                    liveMode
+                      ? "bg-orange-500/90 text-white border-orange-600/80"
+                      : "bg-orange-400/80 text-white border-orange-500/60 hover:brightness-110"
+                  }`}
+                >
+                  Live Interrupt: {liveMode ? "ON" : "OFF"}
+                </button>
+                <p className="text-sm text-gray-700 mt-2 font-semibold">Get instant corrections while you're still speaking</p>
+              </div>
             </div>
           </div>
+        </div>
 
-          {/* Lecture Notes card */}
+        <div className="flex flex-col gap-6 order-2">
+          <div className="text-center flex flex-col items-center justify-center">
+            <div className="relative inline-block">
+              <div className="absolute inset-0 bg-gradient-to-r from-red-400/40 to-orange-400/40 blur-2xl rounded-full scale-150" />
+              <div className="text-7xl md:text-8xl mb-4 relative drop-shadow-lg">🎓</div>
+            </div>
+            <h1 className="text-4xl md:text-6xl font-black bg-gradient-to-r from-red-600 via-orange-600 to-red-600 bg-clip-text text-transparent tracking-tight drop-shadow-md">
+              EchoLearn
+            </h1>
+            <p className="text-sm md:text-base text-gray-700 mt-2 font-semibold tracking-wide">Real-time feedback for real understanding</p>
+          </div>
+
           <div className="rounded-3xl bg-white/70 backdrop-blur-md border border-white/40 shadow-lg shadow-black/5 p-4 md:p-5">
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Lecture Notes
@@ -480,16 +483,13 @@ export default function Home() {
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
             />
-            {/* Callout prompting user to Prepare Notes when notes are present but not prepared */}
             {notes.trim() && !notesPack ? (
               <div className="mt-3 rounded-lg bg-red-50/90 border border-red-200 p-3 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-red-700">Prepare notes first</p>
-                    <p className="text-xs text-red-600">Click Prepare Notes to summarize your lecture notes — this makes live checks faster and more accurate.</p>
-                  </div>
+                <div>
+                  <p className="text-sm font-semibold text-red-700">Prepare notes first</p>
+                  <p className="text-xs text-red-600">Click Prepare Notes to summarize your lecture notes — this makes live checks faster and more accurate.</p>
                 </div>
-                <div className="flex-shrink-0">
+                <div className="shrink-0">
                   <button
                     onClick={prepareNotes}
                     disabled={preparing}
@@ -502,7 +502,6 @@ export default function Home() {
             ) : null}
           </div>
 
-          {/* Transcript card */}
           <div className="rounded-3xl bg-white/70 backdrop-blur-md border border-white/40 shadow-lg shadow-black/5 p-4 md:p-5">
             <div className="flex items-center gap-2 mb-1">
               <label className="block text-sm font-medium text-gray-700">
@@ -523,42 +522,49 @@ export default function Home() {
             />
           </div>
 
-          {/* Main Buttons */}
-          <div className="flex flex-wrap gap-3 justify-center">
-            <button
-              onClick={() => {
-                if (!notes.trim()) {
-                  setResult({
-                    verdict: "partial",
-                    interrupt: false,
-                    feedback: "Please paste your lecture notes first.",
-                    question: "What topic are we covering today?",
-                  });
-                  return;
-                }
-                startListening();
-              }}
-              disabled={listening}
-              className="rounded-full px-5 py-2.5 bg-red-400/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-red-500/60"
-            >
-              {listening ? "Listening..." : "Speak Answer"}
-            </button>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <button
+                  onClick={() => {
+                    if (!notes.trim()) {
+                      setResult({
+                        verdict: "partial",
+                        interrupt: false,
+                        feedback: "Please paste your lecture notes first.",
+                      });
+                      return;
+                    }
+                    startListening();
+                  }}
+                  disabled={listening}
+                  className="w-full rounded-full px-5 py-2.5 bg-red-400/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-red-500/60"
+                >
+                  {listening ? "Listening..." : "Speak Answer"}
+                </button>
+                <p className="text-sm text-gray-700 mt-2 text-center font-semibold tracking-wide">Start speaking now</p>
+              </div>
 
-            <button
-              onClick={stopListening}
-              disabled={!listening}
-              className="rounded-full px-5 py-2.5 bg-orange-400/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-orange-500/60"
-            >
-              Stop
-            </button>
-            {/* Prepare Notes button removed from bottom - callout above provides single action */}
+              <div>
+                <button
+                  onClick={stopListening}
+                  disabled={!listening}
+                  className="w-full rounded-full px-5 py-2.5 bg-orange-400/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-orange-500/60"
+                >
+                  Stop
+                </button>
+                <p className="text-sm text-gray-700 mt-2 text-center font-semibold tracking-wide">Stop recording</p>
+              </div>
+            </div>
+
             <button
               onClick={() => checkWithAI(true)}
               disabled={checking || !notes.trim() || !transcript.trim()}
-              className="rounded-full px-5 py-2.5 bg-orange-500/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-orange-600/60"
+              className="w-full rounded-full px-5 py-2.5 bg-orange-500/90 hover:brightness-110 text-white font-medium transition disabled:opacity-50 shadow-md shadow-black/5 border border-orange-600/60"
             >
               {checking ? "Checking..." : "Check Now"}
             </button>
+            <p className="text-sm text-gray-700 text-center font-semibold tracking-wide">Get instant feedback & see how you did</p>
           </div>
         </div>
       </div>

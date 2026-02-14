@@ -6,7 +6,6 @@ export async function POST(req: Request) {
     const body = await req.json();
 
     if (process.env.DISABLE_GEMINI === "true") {
-      // ✅ dev fallback so you can test UI without burning quota
       const fake = {
         topic: "Demo Mode",
         keyFacts: [
@@ -25,7 +24,6 @@ export async function POST(req: Request) {
 
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    // ✅ truncate raw notes BEFORE summarizing
     const safeNotes = String(body.notes).slice(0, 12000);
 
     const prompt = `
@@ -57,14 +55,12 @@ Return ONLY valid JSON (no markdown, no backticks) with this exact shape:
     try {
       parsed = JSON.parse(cleaned);
     } catch {
-      // if Gemini returns non-json, still return something usable
       return NextResponse.json(
         { notesPack: JSON.stringify({ topic: "Study Sheet", keyFacts: [cleaned] }, null, 2) },
         { status: 200 }
       );
     }
 
-    // ✅ store as a compact string that’s cheap to send later
     return NextResponse.json({ notesPack: JSON.stringify(parsed, null, 2) }, { status: 200 });
   } catch (e) {
     console.error(e);

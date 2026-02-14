@@ -26,7 +26,6 @@ body {
 }
 
 @layer components {
-  /* Removed app-main - inline styles live in page.tsx per user request */
   .app-main {
     @apply min-h-screen min-w-0 relative overflow-hidden p-6 md:p-10;
   }
@@ -36,6 +35,6 @@ body {
   }
 
   .avatar-glow {
-    @apply absolute inset-0 rounded-full w-[280px] h-[280px] md:w-[320px] md:h-[320px] m-auto bg-gradient-to-br from-yellow-200 to-amber-300 blur-2xl transition-all duration-300;
+    @apply absolute inset-0 rounded-full w-70 h-70 md:w-[320px] md:h-80 m-auto bg-linear-to-br from-yellow-200 to-amber-300 blur-2xl transition-all duration-300;
   }
 }

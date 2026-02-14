@@ -45,12 +45,10 @@ export async function POST(req: Request) {
       apiKey: process.env.GEMINI_API_KEY,
     });
 
-     // ✅ prefer condensed notesPack if provided, else raw notes
     const rawNotes = body?.notesPack && String(body.notesPack).trim()
         ? String(body.notesPack)
         : String(body.notes);
 
-    // ✅ truncate so you never send huge prompts
     const safeNotes = rawNotes.slice(0, 3000);
     const safeTranscript = String(body.transcript).slice(0, 600);
 
