@@ -4,6 +4,19 @@ import { GoogleGenAI } from "@google/genai";
 export async function POST(req: Request) {
   try {
     const body = await req.json();
+    
+    if (process.env.DISABLE_GEMINI === "true") {
+        return NextResponse.json(
+            {
+                verdict: "partial",
+                interrupt: false,
+                feedback: "Dev mode: Gemini is disabled (no API calls).",
+                question: "Turn DISABLE_GEMINI off to use real AI again.",
+            },
+            { status: 200 }
+        );
+    }
+
     if (!body?.notes || !String(body.notes).trim()) {
         return NextResponse.json(
             {
