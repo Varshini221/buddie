@@ -16,17 +16,17 @@ EchoLearn was built to make studying more active, interactive, and closer to exp
 
 ✨ Features
 
-  🎙 Real-time speech input
+- Real-time speech input
   
-  🧠 AI explanation evaluation
+- AI explanation evaluation
+
+- Natural voice feedback
   
-  🔊 Natural voice feedback
+- Real-time interruption when explanations go off track
   
-  ⚡ Real-time interruption when explanations go off track
+- Live transcript streaming
   
-  📜 Live transcript streaming
-  
-  🤖 Conversational tutoring experience
+- Conversational tutoring experience
 
 
 🛠 Tech Stack
